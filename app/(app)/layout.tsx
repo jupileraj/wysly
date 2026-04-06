@@ -4,6 +4,7 @@ import Image from 'next/image'
 import NavLink from './NavLink'
 import SignOutButton from './SignOutButton'
 import MobileNav from './MobileNav'
+import Avatar from './Avatar'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -11,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!user) redirect('/login')
 
   const { data: profile } = await supabase
-    .from('profiles').select('name, role').eq('id', user.id).single()
+    .from('profiles').select('name, role, avatar_url').eq('id', user.id).single()
 
   const navItems = [
     { href: '/dashboard', label: 'Dashboard' },
@@ -27,7 +28,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="min-h-screen bg-cream flex flex-col md:flex-row">
 
       {/* ── Mobiele topbar + slide-out nav ── */}
-      <MobileNav navItems={navItems} naam={profile?.name ?? null} />
+      <MobileNav navItems={navItems} naam={profile?.name ?? null} avatarUrl={profile?.avatar_url ?? null} />
 
       {/* ── Sidebar (desktop) ── */}
       <aside className="hidden md:flex flex-col w-52 shrink-0 bg-dark border-r border-white/10 sticky top-0 h-screen">
@@ -40,7 +41,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           ))}
         </nav>
         <div className="px-4 py-4 border-t border-white/10 space-y-2">
-          <p className="text-xs text-white/30 truncate">{profile?.name}</p>
+          <div className="flex items-center gap-2">
+            <Avatar name={profile?.name ?? '?'} avatarUrl={profile?.avatar_url ?? null} size="sm" />
+            <p className="text-xs text-white/50 truncate">{profile?.name}</p>
+          </div>
           <SignOutButton />
         </div>
       </aside>

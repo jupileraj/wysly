@@ -4,6 +4,35 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 const DAGEN = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag']
+const UREN = Array.from({ length: 16 }, (_, i) => i + 6) // 6 t/m 21
+const KWARTIEREN = ['00', '15', '30', '45']
+
+function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [h, m] = value.split(':')
+  return (
+    <div className="flex items-center bg-cream border border-black/20 rounded-xl overflow-hidden focus-within:border-dark/40 transition-colors">
+      <select
+        value={h}
+        onChange={e => onChange(`${e.target.value}:${m}`)}
+        className="text-sm text-dark bg-transparent pl-3 pr-1 py-2 focus:outline-none appearance-none cursor-pointer"
+      >
+        {UREN.map(u => (
+          <option key={u} value={String(u).padStart(2, '0')}>{String(u).padStart(2, '0')}</option>
+        ))}
+      </select>
+      <span className="text-muted text-sm font-medium select-none">:</span>
+      <select
+        value={m}
+        onChange={e => onChange(`${h}:${e.target.value}`)}
+        className="text-sm text-dark bg-transparent pl-1 pr-3 py-2 focus:outline-none appearance-none cursor-pointer"
+      >
+        {KWARTIEREN.map(k => (
+          <option key={k} value={k}>{k}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
 
 type DagState  = { isWorking: boolean; startTime: string; endTime: string }
 type WeekDoel  = { id: string | null; tekst: string; clientId: string | null; voltooid: boolean }
@@ -14,6 +43,14 @@ function getMaandag(date: Date): Date {
   const dag = d.getDay(); d.setDate(d.getDate() + (dag === 0 ? -6 : 1 - dag)); return d
 }
 function formatDate(d: Date): string { return d.toISOString().split('T')[0] }
+function snapKwartier(t: string): string {
+  const [h, m] = t.split(':').map(Number)
+  const kwartier = Math.round(m / 15) * 15
+  const hFin = kwartier === 60 ? h + 1 : h
+  const mFin = kwartier === 60 ? 0 : kwartier
+  return `${String(hFin).padStart(2, '0')}:${String(mFin).padStart(2, '0')}`
+}
+
 function berekenUren(s: string, e: string): number {
   if (!s || !e) return 0
   const [sh, sm] = s.split(':').map(Number); const [eh, em] = e.split(':').map(Number)
@@ -36,6 +73,10 @@ export default function PlanningPage() {
   const [saving,       setSaving]       = useState(false)
   const [opgeslagen,   setOpgeslagen]   = useState(false)
   const [kopieren,     setKopieren]     = useState(false)
+  const [vorigeDoelen, setVorigeDoelen] = useState<{ tekst: string; clientId: string | null }[]>([])
+  const [vorigePopup,  setVorigePopup]  = useState(false)
+  const [geladen,      setGeladen]      = useState(false)
+  const [geselecteerd, setGeselecteerd] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     supabase.from('clients').select('id, name').order('name').then(({ data }) => setKlanten(data ?? []))
@@ -56,8 +97,8 @@ export default function PlanningPage() {
       for (const dp of wp.day_plans as { id: string; day_of_week: number; is_working: boolean; start_time: string | null; end_time: string | null }[]) {
         nd[dp.day_of_week] = {
           isWorking: dp.is_working,
-          startTime: dp.start_time?.slice(0, 5) ?? '09:00',
-          endTime:   dp.end_time?.slice(0, 5)   ?? '17:00',
+          startTime: snapKwartier(dp.start_time?.slice(0, 5) ?? '09:00'),
+          endTime:   snapKwartier(dp.end_time?.slice(0, 5)   ?? '17:00'),
         }
       }
     }
@@ -162,20 +203,40 @@ export default function PlanningPage() {
     if (vwp?.day_plans?.length) {
       const nd = standaard()
       for (const dp of vwp.day_plans as { day_of_week: number; is_working: boolean; start_time: string | null; end_time: string | null }[]) {
-        nd[dp.day_of_week] = { isWorking: dp.is_working, startTime: dp.start_time?.slice(0, 5) ?? '09:00', endTime: dp.end_time?.slice(0, 5) ?? '17:00' }
+        nd[dp.day_of_week] = { isWorking: dp.is_working, startTime: snapKwartier(dp.start_time?.slice(0, 5) ?? '09:00'), endTime: snapKwartier(dp.end_time?.slice(0, 5) ?? '17:00') }
       }
       setDagen(nd)
     }
+    setKopieren(false)
+  }
+
+  async function laadVorigeDoelen() {
+    if (geladen) { setVorigePopup(true); return }
+    const { data: { user } } = await supabase.auth.getUser(); if (!user) return
+    const vorigeWeekStart = new Date(weekStart); vorigeWeekStart.setDate(vorigeWeekStart.getDate() - 7)
+    const { data: vwp } = await supabase.from('week_plans')
+      .select('id').eq('user_id', user.id).eq('week_start', formatDate(vorigeWeekStart)).maybeSingle()
     if (vwp?.id) {
       const { data: vgoals } = await supabase.from('week_goals')
         .select('goal_text, client_id').eq('week_plan_id', vwp.id).order('sort_order')
-      if (vgoals?.length) {
-        const gekopieerd = vgoals.map(g => ({ id: null, tekst: g.goal_text, clientId: g.client_id ?? null, voltooid: false }))
-        setDoelen([...gekopieerd, leegDoel()])
-        setTeVerwijderen([])
-      }
+      setVorigeDoelen((vgoals ?? []).map(g => ({ tekst: g.goal_text, clientId: g.client_id ?? null })))
+    } else {
+      setVorigeDoelen([])
     }
-    setKopieren(false)
+    setGeladen(true)
+    setGeselecteerd(new Set())
+    setVorigePopup(true)
+  }
+
+  function kopieerGeselecteerd() {
+    const toevoegen = vorigeDoelen
+      .filter((_, i) => geselecteerd.has(i))
+      .map(g => ({ id: null, tekst: g.tekst, clientId: g.clientId, voltooid: false }))
+    setDoelen(p => {
+      const bestaand = p.filter(d => d.tekst.trim())
+      return [...bestaand, ...toevoegen, leegDoel()]
+    })
+    setVorigePopup(false)
   }
 
   function updDoel(i: number, patch: Partial<WeekDoel>) {
@@ -212,9 +273,13 @@ export default function PlanningPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-medium text-dark tracking-tight">Weekplanning</h1>
         <div className="flex items-center gap-2">
+          <button onClick={laadVorigeDoelen}
+            className="text-xs text-muted border border-black/20 rounded-full px-3 py-1.5 hover:text-dark hover:border-dark/40 transition-all duration-150">
+            Weektaken vorige week
+          </button>
           <button onClick={kopieerVorigeWeek} disabled={kopieren}
             className="text-xs text-muted border border-black/20 rounded-full px-3 py-1.5 hover:text-dark hover:border-dark/40 disabled:opacity-40 transition-all duration-150">
-            {kopieren ? '…' : 'Kopieer vorige week'}
+            {kopieren ? '…' : 'Kopieer werkschema'}
           </button>
           <div className="flex items-center gap-1 bg-light rounded-full border border-black/20 px-1 py-1">
             <button onClick={() => nav(-1)} className="p-1.5 rounded-full text-muted hover:text-dark hover:bg-grey transition-colors">←</button>
@@ -238,11 +303,9 @@ export default function PlanningPage() {
               <span className="text-xs text-muted w-16">{dagDatum(i)}</span>
               {dag.isWorking && (
                 <div className="flex items-center gap-2 ml-auto">
-                  <input type="time" value={dag.startTime} onChange={e => updDag(i, { startTime: e.target.value })}
-                    className="text-sm border border-black/20 rounded-lg px-2 py-1 text-dark bg-cream focus:outline-none focus:border-dark/40" />
+                  <TimeSelect value={dag.startTime} onChange={v => updDag(i, { startTime: v })} />
                   <span className="text-muted text-xs">–</span>
-                  <input type="time" value={dag.endTime} onChange={e => updDag(i, { endTime: e.target.value })}
-                    className="text-sm border border-black/20 rounded-lg px-2 py-1 text-dark bg-cream focus:outline-none focus:border-dark/40" />
+                  <TimeSelect value={dag.endTime} onChange={v => updDag(i, { endTime: v })} />
                   <span className="text-xs text-muted w-10 text-right">{uren.toFixed(1)}u</span>
                 </div>
               )}
@@ -294,6 +357,49 @@ export default function PlanningPage() {
           </div>
         ))}
       </div>
+
+      {/* ── Popup: weektaken vorige week ── */}
+      {vorigePopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" onClick={() => setVorigePopup(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div className="relative bg-cream rounded-2xl border border-black/20 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-black/10">
+              <h3 className="text-sm font-medium text-dark">Weektaken vorige week</h3>
+              <button onClick={() => setVorigePopup(false)} className="text-muted hover:text-dark transition-colors text-lg leading-none">×</button>
+            </div>
+            {vorigeDoelen.length === 0 ? (
+              <p className="px-5 py-8 text-sm text-muted text-center">Geen weektaken gevonden voor vorige week.</p>
+            ) : (
+              <>
+                <ul className="divide-y divide-black/10 max-h-80 overflow-y-auto">
+                  {vorigeDoelen.map((doel, i) => (
+                    <li key={i}
+                      onClick={() => setGeselecteerd(p => { const n = new Set(p); n.has(i) ? n.delete(i) : n.add(i); return n })}
+                      className={`flex items-center gap-3 px-5 py-3.5 cursor-pointer transition-colors ${geselecteerd.has(i) ? 'bg-brand/15' : 'hover:bg-grey/40'}`}>
+                      <div className={`w-4 h-4 rounded border shrink-0 flex items-center justify-center transition-colors ${geselecteerd.has(i) ? 'bg-brand border-brand' : 'border-black/30'}`}>
+                        {geselecteerd.has(i) && <span className="text-dark text-xs font-bold">✓</span>}
+                      </div>
+                      <span className="flex-1 text-sm text-dark">{doel.tekst}</span>
+                      {doel.clientId && klanten.find(k => k.id === doel.clientId) && (
+                        <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">
+                          {klanten.find(k => k.id === doel.clientId)!.name}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <div className="px-5 py-4 border-t border-black/10 flex items-center justify-between gap-3">
+                  <p className="text-xs text-muted">{geselecteerd.size} geselecteerd</p>
+                  <button onClick={kopieerGeselecteerd} disabled={geselecteerd.size === 0}
+                    className="px-5 py-2 bg-brand text-dark text-sm font-medium rounded-full border border-brand hover:bg-dark hover:text-white hover:border-dark disabled:opacity-40 transition-all duration-150">
+                    Kopieer naar deze week
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <button onClick={slaOp} disabled={saving}
         className={`w-full py-3 rounded-full text-sm font-medium border transition-all duration-150 ${

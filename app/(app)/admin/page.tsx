@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { maakGebruikerAan, updateGebruiker } from './actions'
+import { maakGebruikerAan, updateGebruiker, laadAdminWeekData } from './actions'
+import Avatar from '../Avatar'
 import LogboekPage from '../logboek/page'
 
 const DAGEN = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag']
 
-type Profiel      = { id: string; name: string; contract_hours: number; role: string }
+type Profiel      = { id: string; name: string; contract_hours: number; role: string; avatar_url: string | null }
 type Review       = { completed: boolean; reason: string | null }
 type Taak         = { id: string; task_text: string; sort_order: number; client_id: string | null; task_reviews: Review[] }
 type DayPlan      = { id: string; day_of_week: number; is_working: boolean; start_time: string | null; end_time: string | null; help_text: string | null; tasks: Taak[] }
@@ -63,44 +64,11 @@ export default function AdminPage() {
   const [ngBericht,   setNgBericht]   = useState<{ ok?: boolean; tekst: string } | null>(null)
 
   const laadWeekData = useCallback(async (ws: string) => {
-    const { data } = await supabase.from('week_plans')
-      .select(`id, user_id, week_start,
-        day_plans(id, day_of_week, is_working, start_time, end_time, help_text,
-          tasks(id, task_text, sort_order, client_id, task_reviews(completed, reason)))`)
-      .eq('week_start', ws)
-    setWeekplannen((data as WeekPlan[]) ?? [])
-
-    // Weekdoelen + voltooiingsstatus laden
-    const wpIds = (data ?? []).map((w: { id: string }) => w.id)
-    const userIdForWpId: Record<string, string> = {}
-    for (const w of (data ?? [] as { id: string; user_id: string }[])) userIdForWpId[(w as { id: string }).id] = (w as { user_id: string }).user_id
-
-    if (wpIds.length === 0) { setWeekGoals([]); return }
-
-    const { data: goals } = await supabase.from('week_goals')
-      .select('id, week_plan_id, goal_text, client_id').in('week_plan_id', wpIds).order('sort_order')
-
-    if (!goals?.length) { setWeekGoals([]); return }
-
-    const goalIds = goals.map(g => g.id)
-    const { data: linkedTasks } = await supabase.from('tasks')
-      .select('id, week_goal_id').in('week_goal_id', goalIds)
-    const linkedTaskIds = (linkedTasks ?? []).map(t => t.id)
-    const completedGoalIds = new Set<string>()
-    if (linkedTaskIds.length > 0) {
-      const { data: completedRevs } = await supabase.from('task_reviews')
-        .select('task_id').in('task_id', linkedTaskIds).eq('completed', true)
-      const completedTaskIds = new Set((completedRevs ?? []).map(r => r.task_id))
-      for (const t of (linkedTasks ?? [])) {
-        if (completedTaskIds.has(t.id)) completedGoalIds.add(t.week_goal_id!)
-      }
-    }
-    setWeekGoals(goals.map(g => ({
-      id: g.id, goal_text: g.goal_text, client_id: g.client_id ?? null,
-      voltooid: completedGoalIds.has(g.id),
-      userId: userIdForWpId[g.week_plan_id],
-    })))
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    const res = await laadAdminWeekData(ws)
+    if ('error' in res && res.error) return
+    setWeekplannen((res.weekplannen as WeekPlan[]) ?? [])
+    setWeekGoals(res.weekGoals ?? [])
+  }, [])
 
   const laad = useCallback(async () => {
     setLoading(true)
@@ -109,7 +77,7 @@ export default function AdminPage() {
     if (ep?.role !== 'admin') { setIsAdmin(false); setLoading(false); return }
     setIsAdmin(true)
     const [{ data: pros }, { data: kl }] = await Promise.all([
-      supabase.from('profiles').select('id,name,contract_hours,role').order('name'),
+      supabase.from('profiles').select('id,name,contract_hours,role,avatar_url').order('name'),
       supabase.from('clients').select('id, name').order('name'),
     ])
     setProfielen(pros ?? [])
@@ -158,7 +126,7 @@ export default function AdminPage() {
   if (!isAdmin) return <div className="text-center py-16 text-muted text-sm">Geen toegang.</div>
 
   const clientMap = Object.fromEntries(klanten.map(k => [k.id, k.name]))
-  const medewerkers = profielen.filter(p => p.role === 'employee' && (filter === 'alle' || p.id === filter))
+  const medewerkers = profielen.filter(p => filter === 'alle' || p.id === filter)
 
   // Hulpverzoeken voor deze week
   const hulpVerzoeken = weekplannen.flatMap(wp => {
@@ -183,7 +151,7 @@ export default function AdminPage() {
               className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${view === 'weekdoelen' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
               Weekdoelen
             </button>
-            <button onClick={() => { setView('logboek'); if (!logboekUser && profielen.filter(p => p.role === 'employee')[0]) setLogboekUser(profielen.filter(p => p.role === 'employee')[0].id) }}
+            <button onClick={() => { setView('logboek'); if (!logboekUser && profielen[0]) setLogboekUser(profielen[0].id) }}
               className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${view === 'logboek' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
               Logboek
             </button>
@@ -197,8 +165,8 @@ export default function AdminPage() {
           <div className="flex flex-wrap items-center gap-2">
             <select value={filter} onChange={e => setFilter(e.target.value)}
               className="text-sm border border-black/20 rounded-full px-4 py-1.5 text-dark bg-light focus:outline-none hover:border-dark/40 transition-colors">
-              <option value="alle">Alle medewerkers</option>
-              {profielen.filter(p => p.role === 'employee').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              <option value="alle">Alle gebruikers</option>
+              {profielen.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
             <div className="flex items-center gap-1 bg-light rounded-full border border-black/20 px-1 py-1">
               <button onClick={() => navWeek(-1)} className="p-1.5 rounded-full text-muted hover:text-dark hover:bg-grey transition-colors">←</button>
@@ -210,7 +178,7 @@ export default function AdminPage() {
         {view === 'logboek' && (
           <select value={logboekUser} onChange={e => setLogboekUser(e.target.value)}
             className="text-sm border border-black/20 rounded-full px-4 py-1.5 text-dark bg-light focus:outline-none hover:border-dark/40 transition-colors">
-            {profielen.filter(p => p.role === 'employee').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {profielen.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         )}
       </div>
@@ -281,9 +249,7 @@ export default function AdminPage() {
                 <div key={p.id} className={`${i < profielen.length - 1 ? 'border-b border-black/10' : ''}`}>
                   <div className="flex items-center justify-between px-5 py-3.5">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-dark text-brand text-sm font-medium flex items-center justify-center shrink-0">
-                        {p.name.charAt(0).toUpperCase()}
-                      </div>
+                      <Avatar name={p.name} avatarUrl={p.avatar_url} />
                       <div>
                         <p className="text-sm font-medium text-dark">{p.name}</p>
                         <p className="text-xs text-muted">{p.role === 'admin' ? 'Admin' : 'Medewerker'} · {p.contract_hours}u/week</p>
@@ -341,9 +307,7 @@ export default function AdminPage() {
             if (doelen.length === 0) return (
               <div key={profiel.id} className="bg-light rounded-2xl border border-black/20 px-5 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-dark text-brand text-sm font-medium flex items-center justify-center shrink-0">
-                    {profiel.name.charAt(0).toUpperCase()}
-                  </div>
+                  <Avatar name={profiel.name} avatarUrl={profiel.avatar_url} />
                   <p className="text-sm font-medium text-dark">{profiel.name}</p>
                 </div>
                 <span className="text-xs text-muted bg-grey px-2.5 py-1 rounded-full">Geen weekdoelen</span>
@@ -413,9 +377,7 @@ export default function AdminPage() {
               <button onClick={() => setOpen(p => ({ ...p, [profiel.id]: !p[profiel.id] }))}
                 className="w-full flex items-center justify-between px-5 py-4 hover:bg-grey/40 transition-colors text-left">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-dark text-brand text-sm font-medium flex items-center justify-center shrink-0">
-                    {profiel.name.charAt(0).toUpperCase()}
-                  </div>
+                  <Avatar name={profiel.name} avatarUrl={profiel.avatar_url} />
                   <div>
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium text-dark">{profiel.name}</p>

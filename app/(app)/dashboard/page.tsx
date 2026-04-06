@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { laadTeamVandaag, type CollegaVandaag } from './actions'
+import Avatar from '../Avatar'
 
 type Review    = { completed: boolean; reason: string | null }
 type Taak      = { id: string; task_text: string; sort_order: number; clientNaam?: string | null; review: Review | null }
@@ -77,6 +79,8 @@ export default function DashboardPage() {
   const [datumLabel,    setDatumLabel]    = useState('')
   const [team,          setTeam]          = useState<TeamLid[]>([])
   const [teamOpen,      setTeamOpen]      = useState<Record<string, boolean>>({})
+  const [collega,       setCollega]       = useState<CollegaVandaag[]>([])
+  const [collegaPopup,  setCollegaPopup]  = useState<CollegaVandaag | null>(null)
 
   useEffect(() => {
     setGroetTekst(groet())
@@ -134,6 +138,10 @@ export default function DashboardPage() {
       setScoreTotal(total); setScoreOk(ok)
       setScore(total > 0 ? Math.round((ok / total) * 100) : null)
     }
+
+    // ── Collega's vandaag (voor iedereen) ──
+    const collegaData = await laadTeamVandaag()
+    setCollega(collegaData)
 
     // ── Admin: teamoverzicht ──
     if (admin) {
@@ -243,6 +251,39 @@ export default function DashboardPage() {
         <p className="text-muted text-sm mt-0.5">{datumLabel}</p>
       </div>
 
+      {/* ── Collega's aan het werk vandaag ── */}
+      {collega.filter(c => c.isWorking).length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-medium text-muted uppercase tracking-wider">Team vandaag</p>
+            <p className="text-xs text-muted">
+              <span className="inline-flex items-center gap-1"><svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#00a784" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg> dagplanning ingevuld</span>
+              <span className="mx-2 text-black/20">·</span>
+              <span className="inline-flex items-center gap-1"><span className="text-black/30">○</span> nog niet ingevuld</span>
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {collega.filter(c => c.isWorking).map(c => (
+              <button
+                key={c.id}
+                onClick={() => c.taken.length > 0 ? setCollegaPopup(c) : null}
+                className={`flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
+                  c.taken.length > 0
+                    ? 'bg-brand/15 border-brand/40 text-dark hover:bg-brand/25 cursor-pointer'
+                    : 'bg-light border-black/20 text-muted cursor-default'
+                }`}>
+                <Avatar name={c.name} avatarUrl={c.avatarUrl} size="xs" />
+                {c.name}
+                {c.taken.length > 0
+                  ? <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#00a784" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  : <span className="text-black/25">○</span>
+                }
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Blokkade: vink eerst gisteren af ── */}
       {gisterenOpenCount > 0 && (
         <div className="bg-orange-50 border border-orange-300 rounded-2xl px-5 py-4 flex items-center gap-3">
@@ -327,6 +368,49 @@ export default function DashboardPage() {
         </section>
       </div>
 
+      {/* ── Collega's vandaag ── */}
+      {collega.filter(c => c.isWorking).length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base font-medium text-dark tracking-tight">Taken collega's vandaag</h2>
+            <span className="text-xs text-muted">{collega.filter(c => c.isWorking && c.taken.length > 0).length} van {collega.filter(c => c.isWorking).length} ingevuld</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {collega.filter(c => c.isWorking).map(c => (
+              <div key={c.id} className={`rounded-2xl border overflow-hidden ${c.taken.length > 0 ? 'bg-light border-black/20' : 'bg-light border-black/10 opacity-60'}`}>
+                <div className="flex items-center gap-3 px-5 py-3.5 border-b border-black/10">
+                  <Avatar name={c.name} avatarUrl={c.avatarUrl} size="sm" />
+                  <p className="text-sm font-medium text-dark flex-1">{c.name}</p>
+                  {c.taken.length > 0
+                    ? <span className="text-xs bg-brand/20 text-dark px-2 py-0.5 rounded-full font-medium flex items-center gap-1">Ingevuld <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg></span>
+                    : <span className="text-xs bg-grey text-muted px-2 py-0.5 rounded-full">Nog niet ingevuld</span>
+                  }
+                </div>
+                {c.helpTekst && (
+                  <div className="mx-4 mt-3 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+                    <p className="text-xs font-medium text-orange-600 mb-0.5">Hulpvraag</p>
+                    <p className="text-xs text-orange-800">{c.helpTekst}</p>
+                  </div>
+                )}
+                {c.taken.length === 0 ? (
+                  <p className="px-5 py-4 text-sm text-muted italic">Nog geen dagplanning ingevoerd.</p>
+                ) : (
+                  <ul className="px-5 py-3 space-y-2">
+                    {c.taken.map(t => (
+                      <li key={t.id} className="flex items-center gap-2">
+                        <span className="text-black/20 text-xs shrink-0">○</span>
+                        <span className="text-sm text-dark flex-1">{t.task_text}</span>
+                        {t.clientNaam && <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">{t.clientNaam}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* ── Admin: teamoverzicht ── */}
       {isAdmin && team.length > 0 && (
         <section>
@@ -378,6 +462,41 @@ export default function DashboardPage() {
             })}
           </div>
         </section>
+      )}
+
+      {/* ── Popup: taken van collega ── */}
+      {collegaPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4" onClick={() => setCollegaPopup(null)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div className="relative bg-cream rounded-2xl border border-black/20 w-full max-w-sm shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-black/10">
+              <Avatar name={collegaPopup.name} avatarUrl={collegaPopup.avatarUrl} size="sm" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-dark">{collegaPopup.name}</p>
+                {collegaPopup.startTime && collegaPopup.endTime
+                  ? <p className="text-xs text-muted">{collegaPopup.startTime} – {collegaPopup.endTime}</p>
+                  : <p className="text-xs text-muted">Taken vandaag</p>
+                }
+              </div>
+              <button onClick={() => setCollegaPopup(null)} className="text-muted hover:text-dark transition-colors text-lg leading-none">×</button>
+            </div>
+            {collegaPopup.helpTekst && (
+              <div className="mx-4 mt-3 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+                <p className="text-xs font-medium text-orange-600 mb-0.5">Hulpvraag</p>
+                <p className="text-xs text-orange-800">{collegaPopup.helpTekst}</p>
+              </div>
+            )}
+            <ul className="px-5 py-4 space-y-2.5">
+              {collegaPopup.taken.map(t => (
+                <li key={t.id} className="flex items-center gap-2.5">
+                  <span className="text-black/20 text-xs shrink-0">○</span>
+                  <span className="text-sm text-dark flex-1">{t.task_text}</span>
+                  {t.clientNaam && <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">{t.clientNaam}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
     </div>
   )

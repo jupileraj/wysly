@@ -4,10 +4,11 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import Avatar from './Avatar'
 
 type NavItem = { href: string; label: string }
 
-export default function MobileNav({ navItems, naam }: { navItems: NavItem[]; naam: string | null }) {
+export default function MobileNav({ navItems, naam, avatarUrl }: { navItems: NavItem[]; naam: string | null; avatarUrl: string | null }) {
   const [open, setOpen] = useState(false)
   const pathname = usePathname()
 
@@ -53,8 +54,9 @@ export default function MobileNav({ navItems, naam }: { navItems: NavItem[]; naa
                 )
               })}
             </div>
-            <div className="px-5 py-4 border-t border-white/10">
-              <p className="text-xs text-white/30 truncate">{naam}</p>
+            <div className="px-5 py-4 border-t border-white/10 flex items-center gap-2">
+              {naam && <Avatar name={naam} avatarUrl={avatarUrl} size="sm" />}
+              <p className="text-xs text-white/50 truncate">{naam}</p>
             </div>
           </nav>
         </div>
