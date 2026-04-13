@@ -56,8 +56,8 @@ export async function GET(request: Request) {
     // Bereken het herinneringsvenster: start + 60 min t/m start + 75 min
     const [h, m] = (dp.start_time as string).split(':').map(Number)
     const startMinutes = h * 60 + m
-    const vensterStart = startMinutes + 60
-    const vensterEind  = startMinutes + 75
+    const vensterStart = startMinutes + 90
+    const vensterEind  = startMinutes + 105
 
     if (currentMinutes < vensterStart || currentMinutes >= vensterEind) continue
 
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        text: `⏰ *${naam}* heeft zijn/haar dagtaken nog niet ingevuld — al meer dan een uur aan het werk. Herinnering: vul je taken in via Wysly!`,
+        text: `${naam} heeft zijn dag taken nog niet ingevuld, doe dat zsm.`,
       }),
     })
 

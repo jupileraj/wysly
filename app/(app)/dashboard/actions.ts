@@ -13,6 +13,72 @@ function dagIdx(d: Date): number { const day = d.getDay(); return day === 0 ? 6 
 export type CollegaTaak = { id: string; task_text: string; sort_order: number; clientNaam: string | null }
 export type CollegaVandaag = { id: string; name: string; avatarUrl: string | null; taken: CollegaTaak[]; helpTekst: string | null; isWorking: boolean; startTime: string | null; endTime: string | null }
 
+export type DagPlanning = {
+  dag: number
+  startTime: string | null
+  endTime: string | null
+  taken: { id: string; task_text: string; clientNaam: string | null }[]
+}
+export type WeekPlanningData = { dagen: DagPlanning[] }
+export type ProfielKort = { id: string; name: string; avatarUrl: string | null }
+
+export async function laadAlleProfielen(): Promise<ProfielKort[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+  const admin = createAdminClient()
+  const { data } = await admin.from('profiles').select('id, name, avatar_url').order('name')
+  return (data ?? []).map((p: { id: string; name: string; avatar_url: string | null }) => ({
+    id: p.id, name: p.name, avatarUrl: p.avatar_url ?? null,
+  }))
+}
+
+export async function laadWeekPlanningVanGebruiker(targetUserId: string): Promise<WeekPlanningData> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { dagen: [] }
+
+  const admin = createAdminClient()
+  const vandaag = new Date()
+  const weekStart = formatDate(getMaandag(vandaag))
+
+  const { data: wp } = await admin.from('week_plans')
+    .select('id').eq('user_id', targetUserId).eq('week_start', weekStart).maybeSingle()
+  if (!wp) return { dagen: [] }
+
+  const { data: dps } = await admin.from('day_plans')
+    .select('id, day_of_week, start_time, end_time').eq('week_plan_id', wp.id).eq('is_working', true)
+  if (!dps?.length) return { dagen: [] }
+
+  const dpIds = dps.map((d: { id: string }) => d.id)
+  const { data: taken } = await admin.from('tasks')
+    .select('id, task_text, sort_order, client_id, day_plan_id').in('day_plan_id', dpIds).order('sort_order')
+
+  const clientIds = [...new Set((taken ?? []).map((t: { client_id: string | null }) => t.client_id).filter(Boolean))] as string[]
+  const clientMap: Record<string, string> = {}
+  if (clientIds.length > 0) {
+    const { data: klanten } = await admin.from('clients').select('id, name').in('id', clientIds)
+    for (const k of klanten ?? []) clientMap[(k as { id: string; name: string }).id] = (k as { id: string; name: string }).name
+  }
+
+  const takenPerDp: Record<string, { id: string; task_text: string; clientNaam: string | null }[]> = {}
+  for (const t of (taken ?? []) as { id: string; task_text: string; sort_order: number; client_id: string | null; day_plan_id: string }[]) {
+    if (!takenPerDp[t.day_plan_id]) takenPerDp[t.day_plan_id] = []
+    takenPerDp[t.day_plan_id].push({ id: t.id, task_text: t.task_text, clientNaam: t.client_id ? (clientMap[t.client_id] ?? null) : null })
+  }
+
+  const dagen: DagPlanning[] = (dps as { id: string; day_of_week: number; start_time: string | null; end_time: string | null }[])
+    .sort((a, b) => a.day_of_week - b.day_of_week)
+    .map(dp => ({
+      dag: dp.day_of_week,
+      startTime: dp.start_time ? dp.start_time.slice(0, 5) : null,
+      endTime: dp.end_time ? dp.end_time.slice(0, 5) : null,
+      taken: takenPerDp[dp.id] ?? [],
+    }))
+
+  return { dagen }
+}
+
 export async function laadTeamVandaag(): Promise<CollegaVandaag[]> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

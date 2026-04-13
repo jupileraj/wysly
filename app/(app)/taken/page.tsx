@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { stuurSlackBericht } from './actions'
 
 type Client   = { id: string; name: string }
-type TaakRij  = { id: string | null; tekst: string; clientId: string | null; completed: boolean | null; reason: string; weekGoalId: string | null }
+type TaakRij  = { id: string | null; tekst: string; clientId: string | null; completed: boolean | null; reason: string; weekGoalId: string | null; leverage: 'high' | 'low' | null }
 type WeekDoel = { id: string; goal_text: string; clientId: string | null }
 
 function getMaandag(d: Date): Date {
@@ -30,7 +30,7 @@ function isVerleden(d: Date): boolean {
   const t = new Date(); t.setHours(0, 0, 0, 0); return d < t
 }
 
-const legeRij = (): TaakRij => ({ id: null, tekst: '', clientId: null, completed: null, reason: '', weekGoalId: null })
+const legeRij = (): TaakRij => ({ id: null, tekst: '', clientId: null, completed: null, reason: '', weekGoalId: null, leverage: null })
 
 export default function TakenPage() {
   const supabase = createClient()
@@ -111,7 +111,7 @@ export default function TakenPage() {
         setHelpText(dp.help_text ?? '')
 
         const { data: taken } = await supabase.from('tasks')
-          .select('id, task_text, sort_order, client_id, week_goal_id')
+          .select('id, task_text, sort_order, client_id, week_goal_id, leverage')
           .eq('day_plan_id', dp.id).order('sort_order')
 
         if (taken?.length) {
@@ -127,6 +127,7 @@ export default function TakenPage() {
               id: t.id, tekst: t.task_text, clientId: t.client_id,
               completed: rev?.completed ?? null, reason: rev?.reason ?? '',
               weekGoalId: t.week_goal_id ?? null,
+              leverage: (t.leverage as 'high' | 'low' | null) ?? null,
             }
           })
           while (mapped.length < 5) mapped.push(legeRij())
@@ -160,10 +161,10 @@ export default function TakenPage() {
     for (let i = 0; i < rijen.length; i++) {
       const rij = rijen[i]; const t = rij.tekst.trim(); const cid = rij.clientId ?? null
       if (rij.id) {
-        if (t) await supabase.from('tasks').update({ task_text: t, sort_order: i, client_id: cid, week_goal_id: rij.weekGoalId }).eq('id', rij.id)
+        if (t) await supabase.from('tasks').update({ task_text: t, sort_order: i, client_id: cid, week_goal_id: rij.weekGoalId, leverage: rij.leverage }).eq('id', rij.id)
       } else if (t) {
         const { data: n } = await supabase.from('tasks')
-          .insert({ day_plan_id: dp.id, task_text: t, sort_order: i, client_id: cid, week_goal_id: rij.weekGoalId }).select('id').single()
+          .insert({ day_plan_id: dp.id, task_text: t, sort_order: i, client_id: cid, week_goal_id: rij.weekGoalId, leverage: rij.leverage }).select('id').single()
         if (n) nieuweRijen[i] = { ...nieuweRijen[i], id: n.id }
       }
     }
@@ -324,6 +325,24 @@ export default function TakenPage() {
                       <option value="">Klant</option>
                       {klanten.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
                     </select>
+                    {rij.tekst.trim() && (
+                      <div className="flex gap-0.5 shrink-0">
+                        <button
+                          title="High leverage"
+                          disabled={geblokkeerd}
+                          onClick={() => { const n = [...rijen]; n[i] = { ...n[i], leverage: n[i].leverage === 'high' ? null : 'high' }; setRijen(n) }}
+                          className={`text-xs w-6 h-6 rounded-full font-semibold border transition-all duration-150 ${rij.leverage === 'high' ? 'bg-dark text-brand border-dark' : 'text-muted border-black/20 hover:border-dark/40 hover:text-dark'}`}>
+                          H
+                        </button>
+                        <button
+                          title="Low leverage"
+                          disabled={geblokkeerd}
+                          onClick={() => { const n = [...rijen]; n[i] = { ...n[i], leverage: n[i].leverage === 'low' ? null : 'low' }; setRijen(n) }}
+                          className={`text-xs w-6 h-6 rounded-full font-semibold border transition-all duration-150 ${rij.leverage === 'low' ? 'bg-dark text-brand border-dark' : 'text-muted border-black/20 hover:border-dark/40 hover:text-dark'}`}>
+                          L
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {toonReview && isMislukt && (
                     <div className={`px-4 pb-3 bg-red-50 ${i < rijen.length - 1 ? 'border-b border-black/10' : ''}`}>

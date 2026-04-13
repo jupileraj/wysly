@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { maakGebruikerAan, updateGebruiker, laadAdminWeekData } from './actions'
+import { maakGebruikerAan, updateGebruiker, laadAdminWeekData, laadLeverageStats, type LeverageStat } from './actions'
 import Avatar from '../Avatar'
 import LogboekPage from '../logboek/page'
 
@@ -10,7 +10,7 @@ const DAGEN = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterd
 
 type Profiel      = { id: string; name: string; contract_hours: number; role: string; avatar_url: string | null }
 type Review       = { completed: boolean; reason: string | null }
-type Taak         = { id: string; task_text: string; sort_order: number; client_id: string | null; task_reviews: Review[] }
+type Taak         = { id: string; task_text: string; sort_order: number; client_id: string | null; leverage: string | null; task_reviews: Review[] }
 type DayPlan      = { id: string; day_of_week: number; is_working: boolean; start_time: string | null; end_time: string | null; help_text: string | null; tasks: Taak[] }
 type WeekPlan     = { id: string; user_id: string; week_start: string; day_plans: DayPlan[] }
 type Client       = { id: string; name: string }
@@ -42,9 +42,12 @@ export default function AdminPage() {
   const [open,        setOpen]        = useState<Record<string, boolean>>({})
   const [loading,     setLoading]     = useState(true)
   const [isAdmin,     setIsAdmin]     = useState(false)
-  const [view,        setView]        = useState<'overzicht' | 'gebruikers' | 'weekdoelen' | 'logboek'>('overzicht')
+  const [view,        setView]        = useState<'overzicht' | 'gebruikers' | 'weekdoelen' | 'logboek' | 'leverage'>('overzicht')
   const [weekGoals,   setWeekGoals]   = useState<WeekGoalStatus[]>([])
-  const [logboekUser, setLogboekUser] = useState<string>('')
+  const [logboekUser,    setLogboekUser]    = useState<string>('')
+  const [leverageStats,  setLeverageStats]  = useState<LeverageStat[]>([])
+  const [leveragePeriode,setLeveragePeriode]= useState(4)
+  const [leverageLoading,setLeverageLoading]= useState(false)
 
   // Medewerker bewerken
   const [editId,      setEditId]      = useState<string | null>(null)
@@ -57,7 +60,6 @@ export default function AdminPage() {
   // Gebruiker aanmaken form
   const [ngNaam,      setNgNaam]      = useState('')
   const [ngEmail,     setNgEmail]     = useState('')
-  const [ngWw,        setNgWw]        = useState('')
   const [ngRol,       setNgRol]       = useState('employee')
   const [ngUren,      setNgUren]      = useState('40')
   const [ngSaving,    setNgSaving]    = useState(false)
@@ -96,14 +98,14 @@ export default function AdminPage() {
   async function maakGebruiker(e: React.FormEvent) {
     e.preventDefault(); setNgSaving(true); setNgBericht(null)
     const fd = new FormData()
-    fd.set('name', ngNaam); fd.set('email', ngEmail); fd.set('password', ngWw)
+    fd.set('name', ngNaam); fd.set('email', ngEmail)
     fd.set('role', ngRol); fd.set('contract_hours', ngUren)
     const res = await maakGebruikerAan(fd)
     if (res.error) {
       setNgBericht({ tekst: res.error })
     } else {
-      setNgBericht({ ok: true, tekst: 'Account aangemaakt.' })
-      setNgNaam(''); setNgEmail(''); setNgWw(''); setNgRol('employee'); setNgUren('40')
+      setNgBericht({ ok: true, tekst: `Uitnodiging verstuurd naar ${ngEmail}.` })
+      setNgNaam(''); setNgEmail(''); setNgRol('employee'); setNgUren('40')
       await laad()
     }
     setNgSaving(false)
@@ -120,6 +122,13 @@ export default function AdminPage() {
     if (res.error) { setEditBericht(res.error) }
     else { setEditId(null); await laad() }
     setEditSaving(false)
+  }
+
+  async function laadLeverage(weken: number) {
+    setLeverageLoading(true)
+    const res = await laadLeverageStats(weken)
+    if (!('error' in res)) setLeverageStats(res)
+    setLeverageLoading(false)
   }
 
   if (loading) return <div className="flex justify-center items-center h-48 text-muted text-sm">Laden…</div>
@@ -154,6 +163,10 @@ export default function AdminPage() {
             <button onClick={() => { setView('logboek'); if (!logboekUser && profielen[0]) setLogboekUser(profielen[0].id) }}
               className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${view === 'logboek' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
               Logboek
+            </button>
+            <button onClick={() => { setView('leverage'); if (!leverageStats.length) laadLeverage(leveragePeriode) }}
+              className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${view === 'leverage' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
+              Leverage
             </button>
             <button onClick={() => setView('gebruikers')}
               className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${view === 'gebruikers' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
@@ -195,7 +208,8 @@ export default function AdminPage() {
       {view === 'gebruikers' && (
         <div className="space-y-6">
           <div className="bg-light rounded-2xl border border-black/20 px-6 py-6">
-            <h2 className="text-base font-medium text-dark tracking-tight mb-4">Nieuw account aanmaken</h2>
+            <h2 className="text-base font-medium text-dark tracking-tight mb-1">Medewerker uitnodigen</h2>
+            <p className="text-xs text-muted mb-4">De medewerker ontvangt een e-mail met een link om zelf een wachtwoord in te stellen.</p>
             <form onSubmit={maakGebruiker} className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -206,11 +220,6 @@ export default function AdminPage() {
                 <div>
                   <label className="block text-xs text-muted mb-1">E-mailadres</label>
                   <input type="email" value={ngEmail} onChange={e => setNgEmail(e.target.value)} required
-                    className="w-full border border-black/20 rounded-xl px-4 py-2.5 text-sm text-dark bg-cream focus:outline-none focus:border-dark/40" />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Wachtwoord</label>
-                  <input type="password" value={ngWw} onChange={e => setNgWw(e.target.value)} required minLength={8}
                     className="w-full border border-black/20 rounded-xl px-4 py-2.5 text-sm text-dark bg-cream focus:outline-none focus:border-dark/40" />
                 </div>
                 <div>
@@ -235,7 +244,7 @@ export default function AdminPage() {
               )}
               <button type="submit" disabled={ngSaving}
                 className="w-full py-3 rounded-full text-sm font-medium border bg-brand text-dark border-brand hover:bg-dark hover:text-white hover:border-dark disabled:opacity-50 transition-all duration-150">
-                {ngSaving ? 'Aanmaken…' : 'Account aanmaken'}
+                {ngSaving ? 'Uitnodiging versturen…' : 'Uitnodiging versturen'}
               </button>
             </form>
           </div>
@@ -432,6 +441,11 @@ export default function AdminPage() {
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <p className={`text-sm ${rev?.completed === true ? 'line-through text-muted' : 'text-dark'}`}>{taak.task_text}</p>
+                                      {taak.leverage && (
+                                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${taak.leverage === 'high' ? 'bg-dark text-brand' : 'bg-grey text-muted'}`}>
+                                          {taak.leverage === 'high' ? 'High' : 'Low'}
+                                        </span>
+                                      )}
                                       {taak.client_id && clientMap[taak.client_id] && (
                                         <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">{clientMap[taak.client_id]}</span>
                                       )}
@@ -457,6 +471,62 @@ export default function AdminPage() {
         })}
         {medewerkers.length === 0 && <div className="text-center py-12 text-muted text-sm">Geen medewerkers gevonden.</div>}
       </div>}
+
+      {/* ── Leverage overzicht ── */}
+      {view === 'leverage' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-muted">Periode:</p>
+            <div className="flex gap-1">
+              {([1, 4, 12, 26] as const).map(w => (
+                <button key={w} onClick={() => { setLeveragePeriode(w); laadLeverage(w) }}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-all duration-150 ${leveragePeriode === w ? 'bg-dark text-brand border-dark' : 'text-muted border-black/20 hover:text-dark hover:border-dark/40'}`}>
+                  {w === 1 ? '1 week' : w === 4 ? '1 maand' : w === 12 ? '3 maanden' : '6 maanden'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {leverageLoading ? (
+            <div className="flex justify-center items-center h-32 text-muted text-sm">Laden…</div>
+          ) : (
+            <div className="space-y-3">
+              {leverageStats.filter(s => s.high + s.low + s.geen > 0).map(s => {
+                const totaal = s.high + s.low + s.geen
+                const pctHigh = totaal > 0 ? Math.round((s.high / totaal) * 100) : 0
+                const profiel = profielen.find(p => p.id === s.userId)
+                return (
+                  <div key={s.userId} className="bg-light rounded-2xl border border-black/20 px-5 py-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={s.name} avatarUrl={profiel?.avatar_url ?? null} />
+                        <p className="text-sm font-medium text-dark">{s.name}</p>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="bg-dark text-brand px-2.5 py-0.5 rounded-full font-semibold">{s.high} High</span>
+                        <span className="bg-grey text-muted px-2.5 py-0.5 rounded-full font-medium">{s.low} Low</span>
+                        {s.geen > 0 && <span className="text-muted">{s.geen} zonder label</span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-grey rounded-full overflow-hidden">
+                        <div className="h-full bg-dark rounded-full transition-all duration-500" style={{ width: `${pctHigh}%` }} />
+                      </div>
+                      <span className="text-xs text-muted w-20 text-right shrink-0">{pctHigh}% high</span>
+                    </div>
+                  </div>
+                )
+              })}
+              {leverageStats.length > 0 && leverageStats.every(s => s.high + s.low + s.geen === 0) && (
+                <div className="text-center py-12 text-muted text-sm">Geen taken met leverage-label gevonden in deze periode.</div>
+              )}
+              {leverageStats.length === 0 && !leverageLoading && (
+                <div className="text-center py-12 text-muted text-sm">Geen data beschikbaar.</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

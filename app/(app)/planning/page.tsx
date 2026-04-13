@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 const DAGEN = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag']
@@ -34,9 +34,70 @@ function TimeSelect({ value, onChange }: { value: string; onChange: (v: string) 
   )
 }
 
-type DagState  = { isWorking: boolean; startTime: string; endTime: string }
-type WeekDoel  = { id: string | null; tekst: string; clientId: string | null; voltooid: boolean }
-type Client    = { id: string; name: string }
+type DagState   = { isWorking: boolean; startTime: string; endTime: string }
+type WeekDoel   = { id: string | null; tekst: string; clientId: string | null; voltooid: boolean }
+type Client     = { id: string; name: string }
+type KanbanTaak = { id: string | null; tekst: string; clientId: string | null; weekGoalId: string | null; leverage: 'high' | 'low' | null }
+type Suggestie  = { tekst: string; clientId: string | null; weekGoalId: string | null; leverage: 'high' | 'low' | null }
+
+function KanbanInput({ suggesties, onAdd }: { suggesties: Suggestie[]; onAdd: (t: KanbanTaak) => void }) {
+  const [waarde, setWaarde] = useState('')
+  const [open,   setOpen]   = useState(false)
+  const ref = React.useRef<HTMLDivElement>(null)
+
+  const gefilterd = waarde.trim()
+    ? suggesties.filter(s => s.tekst.toLowerCase().includes(waarde.toLowerCase()))
+    : suggesties
+
+  function kies(s: Suggestie) {
+    onAdd({ id: null, tekst: s.tekst, clientId: s.clientId, weekGoalId: s.weekGoalId, leverage: s.leverage })
+    setWaarde(''); setOpen(false)
+  }
+
+  function bevestig() {
+    const v = waarde.trim()
+    if (v) { onAdd({ id: null, tekst: v, clientId: null, weekGoalId: null, leverage: null }); setWaarde('') }
+    setOpen(false)
+  }
+
+  useEffect(() => {
+    function click(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', click)
+    return () => document.removeEventListener('mousedown', click)
+  }, [])
+
+  return (
+    <div ref={ref} className="relative">
+      <input
+        type="text"
+        value={waarde}
+        placeholder="+ Taak toevoegen…"
+        className="w-full text-xs px-2.5 py-1.5 rounded-xl border border-dashed border-black/20 bg-transparent placeholder-muted/40 text-dark focus:outline-none focus:border-dark/30 transition-colors"
+        onFocus={() => setOpen(true)}
+        onChange={e => { setWaarde(e.target.value); setOpen(true) }}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); bevestig() }
+          if (e.key === 'Escape') setOpen(false)
+        }}
+      />
+      {open && gefilterd.length > 0 && (
+        <div className="absolute bottom-full mb-1 left-0 right-0 bg-cream border border-black/20 rounded-xl shadow-lg z-20 overflow-hidden max-h-48 overflow-y-auto">
+          {gefilterd.map((s, i) => (
+            <button
+              key={i}
+              onMouseDown={e => { e.preventDefault(); kies(s) }}
+              className="w-full text-left px-3 py-2 text-xs text-dark hover:bg-brand/10 transition-colors border-b border-black/5 last:border-0 leading-snug"
+            >
+              {s.tekst}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function getMaandag(date: Date): Date {
   const d = new Date(date); d.setHours(0, 0, 0, 0)
@@ -78,6 +139,13 @@ export default function PlanningPage() {
   const [geladen,      setGeladen]      = useState(false)
   const [geselecteerd, setGeselecteerd] = useState<Set<number>>(new Set())
 
+  // Kanban
+  const [dagPlanIds,         setDagPlanIds]         = useState<Record<number, string>>({})
+  const [kanbanTaken,        setKanbanTaken]        = useState<Record<number, KanbanTaak[]>>({})
+  const [teVerwijderenTaken, setTeVerwijderenTaken] = useState<string[]>([])
+  const [dragSrc,            setDragSrc]            = useState<{ dag: number; idx: number } | null>(null)
+  const [dragOver,           setDragOver]           = useState<number | null>(null)
+
   useEffect(() => {
     supabase.from('clients').select('id, name').order('name').then(({ data }) => setKlanten(data ?? []))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -93,6 +161,8 @@ export default function PlanningPage() {
       .eq('user_id', user.id).eq('week_start', formatDate(weekStart)).maybeSingle()
 
     const nd = standaard()
+    const dpIdMap: Record<number, string> = {}
+
     if (wp?.day_plans?.length) {
       for (const dp of wp.day_plans as { id: string; day_of_week: number; is_working: boolean; start_time: string | null; end_time: string | null }[]) {
         nd[dp.day_of_week] = {
@@ -100,17 +170,42 @@ export default function PlanningPage() {
           startTime: snapKwartier(dp.start_time?.slice(0, 5) ?? '09:00'),
           endTime:   snapKwartier(dp.end_time?.slice(0, 5)   ?? '17:00'),
         }
+        dpIdMap[dp.day_of_week] = dp.id
       }
     }
     setDagen(nd)
     setWeekPlanId(wp?.id ?? null)
+    setDagPlanIds(dpIdMap)
     setTeVerwijderen([])
+    setTeVerwijderenTaken([])
+
+    // Laad kanban taken per dag
+    const dpIds = Object.values(dpIdMap)
+    if (dpIds.length > 0) {
+      const { data: taken } = await supabase.from('tasks')
+        .select('id, task_text, sort_order, client_id, week_goal_id, day_plan_id, leverage')
+        .in('day_plan_id', dpIds).order('sort_order')
+
+      const dpReverseMap: Record<string, number> = {}
+      for (const [dayI, dpId] of Object.entries(dpIdMap)) dpReverseMap[dpId] = Number(dayI)
+
+      const takenMap: Record<number, KanbanTaak[]> = {}
+      for (const t of (taken ?? []) as { id: string; task_text: string; sort_order: number; client_id: string | null; week_goal_id: string | null; day_plan_id: string; leverage: string | null }[]) {
+        const dayI = dpReverseMap[t.day_plan_id]
+        if (dayI !== undefined) {
+          if (!takenMap[dayI]) takenMap[dayI] = []
+          takenMap[dayI].push({ id: t.id, tekst: t.task_text, clientId: t.client_id, weekGoalId: t.week_goal_id, leverage: (t.leverage as 'high' | 'low' | null) ?? null })
+        }
+      }
+      setKanbanTaken(takenMap)
+    } else {
+      setKanbanTaken({})
+    }
 
     if (wp?.id) {
       const { data: goals } = await supabase.from('week_goals')
         .select('id, goal_text, client_id').eq('week_plan_id', wp.id).order('sort_order')
       if (goals?.length) {
-        // Bepaal welke weekdoelen al voltooid zijn via gekoppelde dagtaken
         const goalIds = goals.map(g => g.id)
         const { data: linkedTasks } = await supabase.from('tasks')
           .select('id, week_goal_id').in('week_goal_id', goalIds)
@@ -150,7 +245,7 @@ export default function PlanningPage() {
     if (error || !wp) { setSaving(false); return }
     setWeekPlanId(wp.id)
 
-    // Dagplannen
+    // Dagplannen upserten
     await supabase.from('day_plans').upsert(
       dagen.map((d, i) => ({
         week_plan_id: wp.id, day_of_week: i, is_working: d.isWorking,
@@ -160,13 +255,20 @@ export default function PlanningPage() {
       { onConflict: 'week_plan_id,day_of_week' }
     )
 
+    // Haal day_plan IDs op (nodig voor kanban taken)
+    const { data: allDps } = await supabase.from('day_plans')
+      .select('id, day_of_week').eq('week_plan_id', wp.id)
+    const newDpIdMap: Record<number, string> = {}
+    for (const dp of (allDps ?? []) as { id: string; day_of_week: number }[]) newDpIdMap[dp.day_of_week] = dp.id
+    setDagPlanIds(newDpIdMap)
+
     // Verwijder gemarkeerde weekdoelen
     if (teVerwijderen.length > 0) {
       await supabase.from('week_goals').delete().in('id', teVerwijderen)
       setTeVerwijderen([])
     }
 
-    // Weekdoelen
+    // Weekdoelen opslaan
     const vulled = doelen.filter(d => d.tekst.trim())
     const nieuweDoelen = [...doelen]
     for (let i = 0; i < vulled.length; i++) {
@@ -182,6 +284,42 @@ export default function PlanningPage() {
       }
     }
     setDoelen([...nieuweDoelen.filter(d => d.tekst.trim() || !d.id), leegDoel()])
+
+    // Verwijder gemarkeerde kanban taken
+    if (teVerwijderenTaken.length > 0) {
+      await supabase.from('tasks').delete().in('id', teVerwijderenTaken)
+      setTeVerwijderenTaken([])
+    }
+
+    // Kanban taken per dag opslaan
+    const nieuweKanban = { ...kanbanTaken }
+    for (const [dayIdxStr, taken] of Object.entries(kanbanTaken)) {
+      const dayI = Number(dayIdxStr)
+      const dpId = newDpIdMap[dayI]
+      if (!dpId) continue
+
+      const bijgewerkt = [...taken]
+      for (let i = 0; i < taken.length; i++) {
+        const t = taken[i]
+        if (!t.tekst.trim()) continue
+        if (t.id) {
+          // day_plan_id meesturen zodat verplaatste taken ook worden bijgewerkt
+          await supabase.from('tasks').update({
+            task_text: t.tekst.trim(), sort_order: i,
+            client_id: t.clientId, week_goal_id: t.weekGoalId,
+            day_plan_id: dpId, leverage: t.leverage,
+          }).eq('id', t.id)
+        } else {
+          const { data: nt } = await supabase.from('tasks')
+            .insert({ day_plan_id: dpId, task_text: t.tekst.trim(), sort_order: i, client_id: t.clientId, week_goal_id: t.weekGoalId, leverage: t.leverage })
+            .select('id').single()
+          if (nt) bijgewerkt[i] = { ...bijgewerkt[i], id: nt.id }
+        }
+      }
+      nieuweKanban[dayI] = bijgewerkt.filter(t => t.tekst.trim() || t.id)
+    }
+    setKanbanTaken(nieuweKanban)
+
     setSaving(false); setOpgeslagen(true); setTimeout(() => setOpgeslagen(false), 2500)
   }
 
@@ -242,7 +380,6 @@ export default function PlanningPage() {
   function updDoel(i: number, patch: Partial<WeekDoel>) {
     setDoelen(p => {
       const n = p.map((d, idx) => idx === i ? { ...d, ...patch } : d)
-      // Voeg lege rij toe als laatste rij gevuld wordt
       if (i === p.length - 1 && patch.tekst?.trim()) n.push(leegDoel())
       return n
     })
@@ -250,6 +387,28 @@ export default function PlanningPage() {
 
   function updDag(i: number, u: Partial<DagState>) {
     setDagen(p => p.map((d, idx) => idx === i ? { ...d, ...u } : d))
+  }
+
+  // Kanban helpers
+  function verwijderKanbanTaak(dagI: number, idx: number) {
+    setKanbanTaken(p => {
+      const taak = (p[dagI] ?? [])[idx]
+      if (taak?.id) setTeVerwijderenTaken(tv => [...tv, taak.id!])
+      return { ...p, [dagI]: (p[dagI] ?? []).filter((_, i) => i !== idx) }
+    })
+  }
+
+  function handleDrop(targetDag: number) {
+    setDragOver(null)
+    if (!dragSrc || dragSrc.dag === targetDag) { setDragSrc(null); return }
+    const { dag: srcDag, idx: srcIdx } = dragSrc
+    setKanbanTaken(p => {
+      const srcTaken = [...(p[srcDag] ?? [])]
+      const [taak] = srcTaken.splice(srcIdx, 1)
+      const tgtTaken = [...(p[targetDag] ?? []), taak]
+      return { ...p, [srcDag]: srcTaken, [targetDag]: tgtTaken }
+    })
+    setDragSrc(null)
   }
 
   const totaal  = dagen.reduce((s, d) => s + (d.isWorking ? berekenUren(d.startTime, d.endTime) : 0), 0)
@@ -266,6 +425,8 @@ export default function PlanningPage() {
   }
 
   if (loading) return <div className="flex justify-center items-center h-48 text-muted text-sm">Laden…</div>
+
+  const werkDagen = dagen.map((d, i) => ({ ...d, i })).filter(d => d.isWorking)
 
   return (
     <div>
@@ -357,6 +518,100 @@ export default function PlanningPage() {
           </div>
         ))}
       </div>
+
+      {/* ── Kanban: taken per dag ── */}
+      {werkDagen.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-medium text-dark mb-1">Taken per dag</h2>
+          <p className="text-xs text-muted mb-3">Plan taken voor specifieke dagen. Druk Enter om toe te voegen, sleep om te verplaatsen. Ze staan al klaar bij je dagelijkse taken.</p>
+          <div className="grid grid-cols-3 gap-3">
+            {werkDagen.map(({ i }) => {
+              const taken = (kanbanTaken[i] ?? []).filter(t => t.tekst.trim())
+              const isTarget = dragOver === i
+              const isDragSource = dragSrc?.dag === i
+              return (
+                <div
+                  key={i}
+                  className={`rounded-2xl border transition-colors ${isTarget ? 'border-brand bg-brand/5' : 'border-black/20 bg-light'} ${isDragSource ? 'opacity-70' : ''}`}
+                  onDragOver={e => { e.preventDefault(); if (dragSrc) setDragOver(i) }}
+                  onDragLeave={e => {
+                    if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDragOver(null)
+                  }}
+                  onDrop={() => handleDrop(i)}
+                >
+                  {/* Kolom header */}
+                  <div className="px-3 py-2.5 border-b border-black/10">
+                    <p className="text-xs font-semibold text-dark">{DAGEN[i]}</p>
+                    <p className="text-xs text-muted">{dagDatum(i)}</p>
+                  </div>
+
+                  {/* Taken */}
+                  <div className="p-2 space-y-1.5 min-h-14">
+                    {taken.length === 0 && !isTarget && (
+                      <p className="text-xs text-muted/40 text-center py-3">Geen taken</p>
+                    )}
+                    {isTarget && taken.length === 0 && (
+                      <div className="border-2 border-dashed border-brand/40 rounded-xl h-10 flex items-center justify-center">
+                        <span className="text-xs text-brand/60">Hier neerzetten</span>
+                      </div>
+                    )}
+                    {taken.map((t, ti) => (
+                      <div
+                        key={ti}
+                        draggable
+                        onDragStart={() => setDragSrc({ dag: i, idx: ti })}
+                        onDragEnd={() => { setDragSrc(null); setDragOver(null) }}
+                        className="group flex items-start gap-1 bg-cream rounded-xl px-2.5 py-2 border border-black/10 cursor-grab active:cursor-grabbing active:opacity-40 hover:border-black/20 transition-all"
+                      >
+                        <span className="text-xs text-dark flex-1 leading-snug break-words min-w-0">{t.tekst}</span>
+                        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            title="High leverage"
+                            onMouseDown={e => { e.preventDefault(); setKanbanTaken(p => { const c = [...(p[i] ?? [])]; c[ti] = { ...c[ti], leverage: c[ti].leverage === 'high' ? null : 'high' }; return { ...p, [i]: c } }) }}
+                            className={`text-xs w-5 h-5 rounded-full font-semibold border transition-all ${t.leverage === 'high' ? 'bg-dark text-brand border-dark' : 'text-muted border-black/20'}`}>
+                            H
+                          </button>
+                          <button
+                            title="Low leverage"
+                            onMouseDown={e => { e.preventDefault(); setKanbanTaken(p => { const c = [...(p[i] ?? [])]; c[ti] = { ...c[ti], leverage: c[ti].leverage === 'low' ? null : 'low' }; return { ...p, [i]: c } }) }}
+                            className={`text-xs w-5 h-5 rounded-full font-semibold border transition-all ${t.leverage === 'low' ? 'bg-dark text-brand border-dark' : 'text-muted border-black/20'}`}>
+                            L
+                          </button>
+                          <button
+                            onClick={() => verwijderKanbanTaak(i, ti)}
+                            className="text-muted hover:text-red-500 transition-colors text-sm leading-none ml-0.5">
+                            ×
+                          </button>
+                        </div>
+                        {t.leverage && (
+                          <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full shrink-0 group-hover:hidden ${t.leverage === 'high' ? 'bg-dark text-brand' : 'bg-grey text-muted'}`}>
+                            {t.leverage === 'high' ? 'H' : 'L'}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                    {isTarget && taken.length > 0 && (
+                      <div className="border-2 border-dashed border-brand/40 rounded-xl h-7 flex items-center justify-center mt-1">
+                        <span className="text-xs text-brand/60">Hier neerzetten</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Voeg taak toe */}
+                  <div className="px-2 pb-2">
+                    <KanbanInput
+                      suggesties={doelen
+                        .filter(d => d.tekst.trim())
+                        .map(d => ({ tekst: d.tekst, clientId: d.clientId, weekGoalId: d.id, leverage: null }))}
+                      onAdd={t => setKanbanTaken(p => ({ ...p, [i]: [...(p[i] ?? []), t] }))}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Popup: weektaken vorige week ── */}
       {vorigePopup && (

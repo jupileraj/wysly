@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { laadTeamVandaag, type CollegaVandaag } from './actions'
+import { laadTeamVandaag, laadAlleProfielen, laadWeekPlanningVanGebruiker, type CollegaVandaag, type DagPlanning, type ProfielKort } from './actions'
 import Avatar from '../Avatar'
 
 type Review    = { completed: boolean; reason: string | null }
@@ -79,8 +79,13 @@ export default function DashboardPage() {
   const [datumLabel,    setDatumLabel]    = useState('')
   const [team,          setTeam]          = useState<TeamLid[]>([])
   const [teamOpen,      setTeamOpen]      = useState<Record<string, boolean>>({})
-  const [collega,       setCollega]       = useState<CollegaVandaag[]>([])
-  const [collegaPopup,  setCollegaPopup]  = useState<CollegaVandaag | null>(null)
+  const [collega,           setCollega]           = useState<CollegaVandaag[]>([])
+  const [collegaPopup,      setCollegaPopup]      = useState<CollegaVandaag | null>(null)
+  const [profielen,         setProfielen]         = useState<ProfielKort[]>([])
+  const [weekPlanningUser,  setWeekPlanningUser]  = useState<string>('')
+  const [weekPlanning,      setWeekPlanning]      = useState<DagPlanning[]>([])
+  const [wpLoading,         setWpLoading]         = useState(false)
+  const [userId,            setUserId]            = useState<string>('')
 
   useEffect(() => {
     setGroetTekst(groet())
@@ -91,6 +96,7 @@ export default function DashboardPage() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser(); if (!user) return
 
+    setUserId(user.id)
     const { data: profiel } = await supabase.from('profiles').select('name, role').eq('id', user.id).single()
     setNaam(profiel?.name ?? '')
     const admin = profiel?.role === 'admin'
@@ -143,6 +149,13 @@ export default function DashboardPage() {
     const collegaData = await laadTeamVandaag()
     setCollega(collegaData)
 
+    // ── Weekplanning dropdown ──
+    const profielenData = await laadAlleProfielen()
+    setProfielen(profielenData)
+    setWeekPlanningUser(user.id)
+    const wpData = await laadWeekPlanningVanGebruiker(user.id)
+    setWeekPlanning(wpData.dagen)
+
     // ── Admin: teamoverzicht ──
     if (admin) {
       const { data: medewerkers } = await supabase.from('profiles')
@@ -164,6 +177,14 @@ export default function DashboardPage() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { laad() }, [laad])
+
+  async function wisselWeekPlanningUser(uid: string) {
+    setWeekPlanningUser(uid)
+    setWpLoading(true)
+    const data = await laadWeekPlanningVanGebruiker(uid)
+    setWeekPlanning(data.dagen)
+    setWpLoading(false)
+  }
 
   async function toggleReview(id: string, completed: boolean) {
     setReviews(p => ({ ...p, [id]: { ...p[id], completed } }))
@@ -332,22 +353,63 @@ export default function DashboardPage() {
         <section>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-medium text-dark tracking-tight">Weekplanning</h2>
-            <Link href="/planning" className="text-xs text-muted hover:text-dark transition-colors">Bewerken →</Link>
+            <div className="flex items-center gap-2">
+              {weekPlanningUser === userId && (
+                <Link href="/planning" className="text-xs text-muted hover:text-dark transition-colors">Bewerken →</Link>
+              )}
+              <select
+                value={weekPlanningUser}
+                onChange={e => wisselWeekPlanningUser(e.target.value)}
+                className="text-xs border border-black/20 rounded-xl px-2.5 py-1.5 bg-cream text-dark focus:outline-none focus:border-dark/30 transition-colors"
+              >
+                {profielen.map(p => (
+                  <option key={p.id} value={p.id}>{p.id === userId ? `${p.name} (jij)` : p.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          {weekDoelen.length === 0 ? (
+          {wpLoading ? (
+            <div className="flex justify-center items-center h-24 text-muted text-sm">Laden…</div>
+          ) : weekPlanning.length === 0 ? (
             <div className="bg-light rounded-2xl border border-black/20 px-5 py-8 text-center">
-              <p className="text-muted text-sm">Nog geen weekdoelen ingevoerd.</p>
-              <Link href="/planning" className="text-sm text-dark underline mt-1 inline-block">Planning invullen →</Link>
+              <p className="text-muted text-sm">Geen werkdagen gevonden voor deze week.</p>
+              {weekPlanningUser === userId && (
+                <Link href="/planning" className="text-sm text-dark underline mt-1 inline-block">Planning invullen →</Link>
+              )}
             </div>
           ) : (
-            <div className="bg-light rounded-2xl border border-black/20 overflow-hidden">
-              {weekDoelen.map((doel, i) => (
-                <div key={doel.id} className={`flex items-center gap-3 px-5 py-3 ${i < weekDoelen.length - 1 ? 'border-b border-black/10' : ''}`}>
-                  <span className="text-xs text-muted w-4 shrink-0 text-right">{i + 1}</span>
-                  <span className="flex-1 text-sm text-dark">{doel.goal_text}</span>
-                  {doel.clientNaam && <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">{doel.clientNaam}</span>}
-                </div>
-              ))}
+            <div className="grid grid-cols-1 gap-2">
+              {weekPlanning.map((dag: DagPlanning) => {
+                const NAMEN = ['Maandag', 'Dinsdag', 'Woensdag', 'Donderdag', 'Vrijdag', 'Zaterdag', 'Zondag']
+                const d = new Date(); d.setDate(d.getDate() - dagIdx(d) + dag.dag)
+                const datumLabel = d.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' })
+                return (
+                  <div key={dag.dag} className="bg-light rounded-2xl border border-black/20 overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-black/10">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-dark">{NAMEN[dag.dag]}</span>
+                        <span className="text-xs text-muted">{datumLabel}</span>
+                      </div>
+                      {dag.startTime && dag.endTime && (
+                        <span className="text-xs text-muted">{dag.startTime} – {dag.endTime}</span>
+                      )}
+                    </div>
+                    {dag.taken.length === 0 ? (
+                      <p className="px-4 py-2.5 text-xs text-muted italic">Nog geen taken gepland</p>
+                    ) : (
+                      <ul className="px-4 py-2 space-y-1.5">
+                        {dag.taken.map(t => (
+                          <li key={t.id} className="flex items-center gap-2">
+                            <span className="text-black/20 text-xs shrink-0">○</span>
+                            <span className="text-sm text-dark flex-1">{t.task_text}</span>
+                            {t.clientNaam && <span className="text-xs bg-dark text-brand px-2 py-0.5 rounded-full font-medium shrink-0">{t.clientNaam}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
         </section>
@@ -378,14 +440,17 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {collega.filter(c => c.isWorking).map(c => (
               <div key={c.id} className={`rounded-2xl border overflow-hidden ${c.taken.length > 0 ? 'bg-light border-black/20' : 'bg-light border-black/10 opacity-60'}`}>
-                <div className="flex items-center gap-3 px-5 py-3.5 border-b border-black/10">
+                <button
+                  onClick={() => c.taken.length > 0 ? setCollegaPopup(c) : null}
+                  className={`w-full flex items-center gap-3 px-5 py-3.5 border-b border-black/10 text-left ${c.taken.length > 0 ? 'hover:bg-grey/40 cursor-pointer transition-colors' : 'cursor-default'}`}
+                >
                   <Avatar name={c.name} avatarUrl={c.avatarUrl} size="sm" />
                   <p className="text-sm font-medium text-dark flex-1">{c.name}</p>
                   {c.taken.length > 0
                     ? <span className="text-xs bg-brand/20 text-dark px-2 py-0.5 rounded-full font-medium flex items-center gap-1">Ingevuld <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg></span>
                     : <span className="text-xs bg-grey text-muted px-2 py-0.5 rounded-full">Nog niet ingevuld</span>
                   }
-                </div>
+                </button>
                 {c.helpTekst && (
                   <div className="mx-4 mt-3 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
                     <p className="text-xs font-medium text-orange-600 mb-0.5">Hulpvraag</p>
