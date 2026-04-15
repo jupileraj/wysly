@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { maakGebruikerAan, maakDirectGebruikerAan, updateGebruiker, laadAdminWeekData, laadLeverageStats, type LeverageStat } from './actions'
+import { maakGebruikerAan, maakDirectGebruikerAan, updateGebruiker, verwijderGebruiker, laadAdminWeekData, laadLeverageStats, type LeverageStat } from './actions'
 import Avatar from '../Avatar'
 import LogboekPage from '../logboek/page'
 
@@ -50,12 +50,14 @@ export default function AdminPage() {
   const [leverageLoading,setLeverageLoading]= useState(false)
 
   // Medewerker bewerken
-  const [editId,      setEditId]      = useState<string | null>(null)
-  const [editNaam,    setEditNaam]    = useState('')
-  const [editRol,     setEditRol]     = useState('employee')
-  const [editUren,    setEditUren]    = useState('40')
-  const [editSaving,  setEditSaving]  = useState(false)
-  const [editBericht, setEditBericht] = useState<string | null>(null)
+  const [editId,        setEditId]        = useState<string | null>(null)
+  const [editNaam,      setEditNaam]      = useState('')
+  const [editRol,       setEditRol]       = useState('employee')
+  const [editUren,      setEditUren]      = useState('40')
+  const [editSaving,    setEditSaving]    = useState(false)
+  const [editBericht,   setEditBericht]   = useState<string | null>(null)
+  const [verwijderId,   setVerwijderId]   = useState<string | null>(null)
+  const [verwijderSaving, setVerwijderSaving] = useState(false)
 
   // Gebruiker aanmaken form
   const [ngModus,     setNgModus]     = useState<'uitnodigen' | 'direct'>('uitnodigen')
@@ -116,6 +118,14 @@ export default function AdminPage() {
 
   function startEdit(p: Profiel) {
     setEditId(p.id); setEditNaam(p.name); setEditRol(p.role); setEditUren(String(p.contract_hours)); setEditBericht(null)
+  }
+
+  async function bevestigVerwijder(userId: string) {
+    setVerwijderSaving(true)
+    const res = await verwijderGebruiker(userId)
+    if (res.error) { setEditBericht(res.error) }
+    else { setEditId(null); setVerwijderId(null); await laad() }
+    setVerwijderSaving(false)
   }
 
   async function slaEditOp() {
@@ -324,10 +334,30 @@ export default function AdminPage() {
                         </div>
                       </div>
                       {editBericht && <p className="text-xs text-red-500 mt-2">{editBericht}</p>}
-                      <button onClick={slaEditOp} disabled={editSaving || !editNaam.trim()}
-                        className="mt-3 px-5 py-2 bg-brand text-dark text-sm font-medium rounded-full border border-brand hover:bg-dark hover:text-white hover:border-dark disabled:opacity-50 transition-all duration-150">
-                        {editSaving ? 'Opslaan…' : 'Opslaan'}
-                      </button>
+                      <div className="flex items-center justify-between mt-3">
+                        <button onClick={slaEditOp} disabled={editSaving || !editNaam.trim()}
+                          className="px-5 py-2 bg-brand text-dark text-sm font-medium rounded-full border border-brand hover:bg-dark hover:text-white hover:border-dark disabled:opacity-50 transition-all duration-150">
+                          {editSaving ? 'Opslaan…' : 'Opslaan'}
+                        </button>
+                        {verwijderId === p.id ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-red-600">Weet je het zeker?</span>
+                            <button onClick={() => bevestigVerwijder(p.id)} disabled={verwijderSaving}
+                              className="px-3 py-1.5 text-xs font-medium bg-red-500 text-white rounded-full border border-red-500 hover:bg-red-700 hover:border-red-700 disabled:opacity-50 transition-all duration-150">
+                              {verwijderSaving ? 'Verwijderen…' : 'Ja, verwijderen'}
+                            </button>
+                            <button onClick={() => setVerwijderId(null)}
+                              className="px-3 py-1.5 text-xs font-medium text-muted border border-black/20 rounded-full hover:border-dark/40 hover:text-dark transition-all duration-150">
+                              Annuleren
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setVerwijderId(p.id)}
+                            className="px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-full hover:bg-red-50 hover:border-red-400 transition-all duration-150">
+                            Verwijderen
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

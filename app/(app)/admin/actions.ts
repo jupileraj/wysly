@@ -217,6 +217,21 @@ export async function maakDirectGebruikerAan(formData: FormData): Promise<{ erro
   return { success: true }
 }
 
+export async function verwijderGebruiker(userId: string): Promise<{ error?: string; success?: boolean }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Niet ingelogd' }
+  if (user.id === userId) return { error: 'Je kunt je eigen account niet verwijderen' }
+
+  const { data: profiel } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+  if (profiel?.role !== 'admin') return { error: 'Geen toegang' }
+
+  const admin = createAdminClient()
+  const { error } = await admin.auth.admin.deleteUser(userId)
+  if (error) return { error: error.message }
+  return { success: true }
+}
+
 export async function updateGebruiker(
   userId: string,
   data: { name: string; role: string; contract_hours: number }
