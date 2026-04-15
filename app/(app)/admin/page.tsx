@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { maakGebruikerAan, updateGebruiker, laadAdminWeekData, laadLeverageStats, type LeverageStat } from './actions'
+import { maakGebruikerAan, maakDirectGebruikerAan, updateGebruiker, laadAdminWeekData, laadLeverageStats, type LeverageStat } from './actions'
 import Avatar from '../Avatar'
 import LogboekPage from '../logboek/page'
 
@@ -58,8 +58,10 @@ export default function AdminPage() {
   const [editBericht, setEditBericht] = useState<string | null>(null)
 
   // Gebruiker aanmaken form
+  const [ngModus,     setNgModus]     = useState<'uitnodigen' | 'direct'>('uitnodigen')
   const [ngNaam,      setNgNaam]      = useState('')
   const [ngEmail,     setNgEmail]     = useState('')
+  const [ngWw,        setNgWw]        = useState('')
   const [ngRol,       setNgRol]       = useState('employee')
   const [ngUren,      setNgUren]      = useState('40')
   const [ngSaving,    setNgSaving]    = useState(false)
@@ -100,12 +102,13 @@ export default function AdminPage() {
     const fd = new FormData()
     fd.set('name', ngNaam); fd.set('email', ngEmail)
     fd.set('role', ngRol); fd.set('contract_hours', ngUren)
-    const res = await maakGebruikerAan(fd)
+    if (ngModus === 'direct') fd.set('password', ngWw)
+    const res = ngModus === 'uitnodigen' ? await maakGebruikerAan(fd) : await maakDirectGebruikerAan(fd)
     if (res.error) {
       setNgBericht({ tekst: res.error })
     } else {
-      setNgBericht({ ok: true, tekst: `Uitnodiging verstuurd naar ${ngEmail}.` })
-      setNgNaam(''); setNgEmail(''); setNgRol('employee'); setNgUren('40')
+      setNgBericht({ ok: true, tekst: ngModus === 'uitnodigen' ? `Uitnodiging verstuurd naar ${ngEmail}.` : `Account aangemaakt voor ${ngNaam}.` })
+      setNgNaam(''); setNgEmail(''); setNgWw(''); setNgRol('employee'); setNgUren('40')
       await laad()
     }
     setNgSaving(false)
@@ -208,8 +211,24 @@ export default function AdminPage() {
       {view === 'gebruikers' && (
         <div className="space-y-6">
           <div className="bg-light rounded-2xl border border-black/20 px-6 py-6">
-            <h2 className="text-base font-medium text-dark tracking-tight mb-1">Medewerker uitnodigen</h2>
-            <p className="text-xs text-muted mb-4">De medewerker ontvangt een e-mail met een link om zelf een wachtwoord in te stellen.</p>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-medium text-dark tracking-tight">Medewerker toevoegen</h2>
+              <div className="flex items-center gap-1 bg-grey rounded-full border border-black/10 p-1">
+                <button type="button" onClick={() => { setNgModus('uitnodigen'); setNgBericht(null) }}
+                  className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${ngModus === 'uitnodigen' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
+                  Uitnodiging
+                </button>
+                <button type="button" onClick={() => { setNgModus('direct'); setNgBericht(null) }}
+                  className={`text-xs font-medium px-3 py-1 rounded-full transition-colors ${ngModus === 'direct' ? 'bg-dark text-brand' : 'text-muted hover:text-dark'}`}>
+                  Direct aanmaken
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-muted mb-4">
+              {ngModus === 'uitnodigen'
+                ? 'De medewerker ontvangt een e-mail met een link om zelf een wachtwoord in te stellen.'
+                : 'Account wordt direct aangemaakt met het door jou opgegeven wachtwoord. Geef dit zelf door aan de medewerker.'}
+            </p>
             <form onSubmit={maakGebruiker} className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -222,6 +241,14 @@ export default function AdminPage() {
                   <input type="email" value={ngEmail} onChange={e => setNgEmail(e.target.value)} required
                     className="w-full border border-black/20 rounded-xl px-4 py-2.5 text-sm text-dark bg-cream focus:outline-none focus:border-dark/40" />
                 </div>
+                {ngModus === 'direct' && (
+                  <div>
+                    <label className="block text-xs text-muted mb-1">Wachtwoord</label>
+                    <input type="text" value={ngWw} onChange={e => setNgWw(e.target.value)} required={ngModus === 'direct'} minLength={8}
+                      placeholder="Minimaal 8 tekens"
+                      className="w-full border border-black/20 rounded-xl px-4 py-2.5 text-sm text-dark bg-cream focus:outline-none focus:border-dark/40" />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs text-muted mb-1">Contracturen / week</label>
                   <input type="number" value={ngUren} onChange={e => setNgUren(e.target.value)} min="0" step="0.5"
@@ -240,11 +267,13 @@ export default function AdminPage() {
                 </div>
               </div>
               {ngBericht && (
-                <p className={`text-sm ${ngBericht.ok ? 'text-brand-600' : 'text-red-500'}`}>{ngBericht.tekst}</p>
+                <p className={`text-sm ${ngBericht.ok ? 'text-green-600' : 'text-red-500'}`}>{ngBericht.tekst}</p>
               )}
               <button type="submit" disabled={ngSaving}
                 className="w-full py-3 rounded-full text-sm font-medium border bg-brand text-dark border-brand hover:bg-dark hover:text-white hover:border-dark disabled:opacity-50 transition-all duration-150">
-                {ngSaving ? 'Uitnodiging versturen…' : 'Uitnodiging versturen'}
+                {ngSaving
+                  ? (ngModus === 'uitnodigen' ? 'Uitnodiging versturen…' : 'Account aanmaken…')
+                  : (ngModus === 'uitnodigen' ? 'Uitnodiging versturen' : 'Account aanmaken')}
               </button>
             </form>
           </div>
