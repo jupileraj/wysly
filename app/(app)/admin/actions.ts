@@ -2,6 +2,7 @@
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
+import { Resend } from 'resend'
 
 export async function laadAdminWeekData(weekStart: string) {
   const supabase = await createClient()
@@ -132,18 +133,50 @@ export async function maakGebruikerAan(formData: FormData): Promise<{ error?: st
 
   const admin = createAdminClient()
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'
-  const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-    data: { name, role, contract_hours: contractHours },
-    redirectTo: `${siteUrl}/auth/callback?next=/accept-invite`,
+
+  // Genereer uitnodigingslink via Supabase
+  const { data: linkData, error } = await admin.auth.admin.generateLink({
+    type: 'invite',
+    email,
+    options: {
+      data: { name, role, contract_hours: contractHours },
+      redirectTo: `${siteUrl}/auth/callback?next=/accept-invite`,
+    },
   })
 
   if (error) return { error: error.message }
 
-  if (data.user) {
+  // Profiel alvast bijwerken
+  if (linkData.user) {
     await admin.from('profiles')
       .update({ name, role, contract_hours: contractHours })
-      .eq('id', data.user.id)
+      .eq('id', linkData.user.id)
   }
+
+  // Verstuur e-mail via Resend
+  const resend = new Resend(process.env.RESEND_API_KEY)
+  const inviteUrl = linkData.properties.action_link
+
+  const { error: mailError } = await resend.emails.send({
+    from: 'Wysly <uitnodiging@wysly.nl>',
+    to: email,
+    subject: `Je bent uitgenodigd voor Wysly`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px; color: #1a1a1a;">
+        <h1 style="font-size: 24px; font-weight: 600; margin-bottom: 8px;">Hey ${name} 👋</h1>
+        <p style="color: #666; margin-bottom: 24px;">Je bent uitgenodigd om Wysly te gebruiken — de weekplanner van jouw team.</p>
+        <a href="${inviteUrl}"
+          style="display: inline-block; background: #00d49c; color: #1a1a1a; font-weight: 600; font-size: 15px; padding: 12px 28px; border-radius: 999px; text-decoration: none;">
+          Account activeren
+        </a>
+        <p style="color: #999; font-size: 13px; margin-top: 24px;">Deze link is 24 uur geldig. Werkt de knop niet? Kopieer dan deze URL:<br/>
+          <a href="${inviteUrl}" style="color: #00d49c; word-break: break-all;">${inviteUrl}</a>
+        </p>
+      </div>
+    `,
+  })
+
+  if (mailError) return { error: `Account aangemaakt maar e-mail mislukt: ${mailError.message}` }
 
   return { success: true }
 }
